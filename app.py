@@ -4,24 +4,43 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import scipy.stats as stats
 
-# --- Configuração da Página ---
-st.set_page_config(page_title="Dashboard Logística", layout="wide")
-st.title("📦 Decisão Logística: Análise de Risco e Trade-offs")
-st.markdown("Simulador de Estoque para o Módulo X100 sob Incerteza de Demanda.")
+# --- CONFIGURAÇÃO DA PÁGINA ---
+st.set_page_config(page_title="Logística X100 - UnB", layout="wide")
+st.title("📦 Dashboard Avançado: Análise de Risco e Trade-offs Logísticos")
+st.markdown("Simulação Estocástica de Estoques - Módulo X100 | LogiTech Distribuidora")
 
-# --- Parâmetros Fixos ---
-mu, sigma, days, L = 50, 15, 365, 5
-S, H_anual, C_f = 200.00, 2.00, 10.00
+# --- MENU LATERAL (FILTROS) ---
+st.sidebar.header("⚙️ Parâmetros de Simulação")
+st.sidebar.markdown("Ajuste as variáveis de mercado e operação:")
+
+nivel_servico_alvo = st.sidebar.slider("Meta de Nível de Serviço (%)", 50.0, 99.9, 95.0, 0.1)
+sigma = st.sidebar.slider("Volatilidade da Demanda (Desvio Padrão)", 5, 30, 15, 1)
+L = st.sidebar.slider("Lead Time do Fornecedor (Dias)", 1, 15, 5, 1)
+C_f = st.sidebar.number_input("Custo de Ruptura (R$/un. perdida)", value=10.0, step=1.0)
+
+# Parâmetros Fixos Base
+mu = 50
+days = 365
+S = 200.00
+H_anual = 2.00
 H_diario = H_anual / 365
 
+# Geração de Demanda (Dinâmica baseada no sigma escolhido)
 np.random.seed(42)
 demand = np.maximum(np.random.normal(mu, sigma, days), 0).round().astype(int)
 D_total = demand.sum()
+
+# Cálculos Teóricos
 Q_otimo = round(np.sqrt((2 * D_total * S) / H_anual))
 R_deterministico = mu * L
 
-# --- Motor de Simulação ---
-def simular_estoque(R_alvo):
+# Cálculo do Estoque de Segurança
+z_score = stats.norm.ppf(nivel_servico_alvo / 100)
+SS = round(z_score * (sigma * np.sqrt(L)))
+R_estocastico = R_deterministico + SS
+
+# --- MOTOR DE SIMULAÇÃO ---
+def simular(R_alvo):
     estoque_atual = Q_otimo
     pedidos_em_transito = []
     estoque_fisico = np.zeros(days)
@@ -48,38 +67,71 @@ def simular_estoque(R_alvo):
             pedidos_em_transito.append({'qtd': Q_otimo, 'dia_chegada': t + L})
             custo_pedido_total += S
             
-    custo_manutencao_total = estoque_fisico.sum() * H_diario
-    return estoque_fisico, custo_manutencao_total + custo_pedido_total + custo_ruptura_total, unidades_perdidas, custo_ruptura_total, custo_manutencao_total
+    custo_manutencao = estoque_fisico.sum() * H_diario
+    custo_total = custo_manutencao + custo_pedido_total + custo_ruptura_total
+    ns_real = 100 * (1 - (unidades_perdidas / D_total))
+    return estoque_fisico, custo_total, unidades_perdidas, custo_ruptura_total, custo_manutencao, ns_real
 
-# --- Interface Interativa (Barra Lateral) ---
-st.sidebar.header("⚙️ Parâmetros de Decisão")
-nivel_servico = st.sidebar.slider("Nível de Serviço Alvo (%)", min_value=50.0, max_value=99.9, value=95.0, step=0.1)
+# Rodar Cenários A (Sem proteção) e B (Com proteção)
+estoque_A, custo_A, faltas_A, cr_A, cm_A, ns_A = simular(R_deterministico)
+estoque_B, custo_B, faltas_B, cr_B, cm_B, ns_B = simular(R_estocastico)
 
-# --- Cálculos Dinâmicos ---
-z_score = stats.norm.ppf(nivel_servico / 100)
-SS = round(z_score * (sigma * np.sqrt(L)))
-R_dinamico = R_deterministico + SS
-
-# Roda a simulação para o cenário escolhido
-estoque_sim, custo_total, faltas, custo_falta, custo_manutencao = simular_estoque(R_dinamico)
-
-# --- Exibição dos KPIs ---
-st.subheader("📊 Indicadores de Desempenho (Simulação 365 dias)")
+# --- VISUALIZAÇÃO DOS RESULTADOS ---
+st.subheader("📊 Comparativo de Desempenho (Horizonte de 365 Dias)")
 col1, col2, col3, col4 = st.columns(4)
-col1.metric("Estoque de Segurança (SS)", f"{SS} un.", "Proteção extra")
-col2.metric("Ponto de Ressuprimento (R)", f"{R_dinamico} un.", f"Gatilho de compra")
-col3.metric("Rupturas (Vendas Perdidas)", f"{faltas} un.", "Queda drástica no Custo de Falta!" if faltas == 0 else "Risco Operacional", delta_color="inverse")
-col4.metric("Custo Total Logístico", f"R$ {custo_total:.2f}")
+col1.metric("Estoque de Segurança Gerado", f"{SS} un.")
+col2.metric("Nível de Serviço Real", f"{ns_B:.2f}%", f"{ns_B - ns_A:.2f}% vs Cenário A")
+col3.metric("Vendas Salvas (Ruptura Evitada)", f"{faltas_A - faltas_B} un.", "Melhoria Operacional")
+col4.metric("Economia Gerada (Custo Total)", f"R$ {custo_A - custo_B:.2f}", "Redução de Custo", delta_color="inverse")
 
-# --- Gráfico ---
-st.subheader("📈 Dinâmica do Estoque Físico")
-fig, ax = plt.subplots(figsize=(12, 4))
-ax.plot(estoque_sim, color='#2ca02c', linewidth=1.5, label='Nível de Estoque Simulado')
-ax.axhline(0, color='red', linewidth=1, linestyle='--')
-ax.set_ylabel("Unidades em Estoque")
-ax.set_xlabel("Dias do Ano")
-ax.legend()
-ax.grid(alpha=0.3)
-st.pyplot(fig)
+st.divider()
 
-st.success("💡 **Decisão Recomendada:** Observe como o aumento do Nível de Serviço zera as rupturas, equilibrando o *Trade-off* entre armazenagem e falta.")
+col_chart1, col_chart2 = st.columns(2)
+
+with col_chart1:
+    st.markdown("**📈 Dinâmica do Estoque: Cenário A vs Cenário B**")
+    fig1, ax1 = plt.subplots(figsize=(8, 4))
+    ax1.plot(estoque_A, color='#d62728', alpha=0.5, linestyle='--', label='A: Determinístico (Rupturas)')
+    ax1.plot(estoque_B, color='#2ca02c', linewidth=2, label='B: Estocástico (Com Proteção)')
+    ax1.axhline(0, color='black', linewidth=1)
+    ax1.set_ylabel("Unidades Físicas")
+    ax1.set_xlabel("Dias do Ano")
+    ax1.legend(loc="upper right", fontsize='small')
+    ax1.grid(alpha=0.3)
+    st.pyplot(fig1)
+
+with col_chart2:
+    st.markdown("**💰 Composição do Custo Total Logístico**")
+    fig2, ax2 = plt.subplots(figsize=(8, 4))
+    categorias = ['Cenário A (Teórico)', 'Cenário B (Recomendado)']
+    manutencao = [cm_A, cm_B]
+    ruptura = [cr_A, cr_B]
+    
+    ax2.bar(categorias, manutencao, label='Custo de Armazenagem', color='#1f77b4')
+    ax2.bar(categorias, ruptura, bottom=manutencao, label='Custo de Ruptura (Falta)', color='#ff7f0e')
+    ax2.set_ylabel("Valor (R$)")
+    ax2.legend(loc="upper right", fontsize='small')
+    st.pyplot(fig2)
+
+st.divider()
+
+st.markdown("**🎯 Curva de Trade-off: Nível de Serviço vs Custo Total**")
+st.markdown("*A simulação executa 20 cenários diferentes em background para plotar a curva de risco logístico.*")
+
+ns_testes = np.linspace(80, 99.9, 20)
+custos_testes = []
+for ns_t in ns_testes:
+    z_t = stats.norm.ppf(ns_t / 100)
+    ss_t = round(z_t * (sigma * np.sqrt(L)))
+    r_t = R_deterministico + ss_t
+    _, c_tot, _, _, _, _ = simular(r_t)
+    custos_testes.append(c_tot)
+
+fig3, ax3 = plt.subplots(figsize=(12, 3))
+ax3.plot(ns_testes, custos_testes, marker='o', linestyle='-', color='purple')
+ax3.axvline(x=nivel_servico_alvo, color='red', linestyle='--', label=f'Decisão Atual do Painel ({nivel_servico_alvo}%)')
+ax3.set_xlabel("Meta de Nível de Serviço (%)")
+ax3.set_ylabel("Custo Total Logístico (R$)")
+ax3.grid(alpha=0.3)
+ax3.legend()
+st.pyplot(fig3)
